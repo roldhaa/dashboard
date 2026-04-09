@@ -76,6 +76,12 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
     const observerRef = useRef<IntersectionObserver | null>(null);
     const currentObservedRef = useRef<Element | null>(null);
     const navigate = useNavigate();
+    const toggleMultiValue = <T,>(current: T[], value: T, checked: boolean) => {
+        if (checked) {
+            return current.includes(value) ? current : [...current, value];
+        }
+        return current.filter((item) => item !== value);
+    };
 
     useEffect(() => {
         const observer = new IntersectionObserver(
@@ -663,11 +669,10 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
                                     <DropdownMenuCheckboxItem
                                         key={type.value}
                                         checked={selectedTypes.includes(type.value)}
+                                        onSelect={(event) => event.preventDefault()}
                                         onCheckedChange={(checked) => {
                                             setSelectedTypes((prev) =>
-                                                checked
-                                                    ? [...prev, type.value]
-                                                    : prev.filter((value) => value !== type.value)
+                                                toggleMultiValue(prev, type.value, Boolean(checked))
                                             );
                                         }}
                                     >
@@ -694,11 +699,10 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
                                     <DropdownMenuCheckboxItem
                                         key={category.value}
                                         checked={selectedCategories.includes(category.value)}
+                                        onSelect={(event) => event.preventDefault()}
                                         onCheckedChange={(checked) => {
                                             setSelectedCategories((prev) =>
-                                                checked
-                                                    ? [...prev, category.value]
-                                                    : prev.filter((value) => value !== category.value)
+                                                toggleMultiValue(prev, category.value, Boolean(checked))
                                             );
                                         }}
                                     >
@@ -725,11 +729,14 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
                                     <DropdownMenuCheckboxItem
                                         key={mode.value}
                                         checked={selectedWorkModes.includes(mode.value as WorkModeValue)}
+                                        onSelect={(event) => event.preventDefault()}
                                         onCheckedChange={(checked) => {
                                             setSelectedWorkModes((prev) =>
-                                                checked
-                                                    ? [...prev, mode.value as WorkModeValue]
-                                                    : prev.filter((value) => value !== mode.value)
+                                                toggleMultiValue(
+                                                    prev,
+                                                    mode.value as WorkModeValue,
+                                                    Boolean(checked)
+                                                )
                                             );
                                         }}
                                     >
@@ -804,11 +811,14 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
                                         <DropdownMenuCheckboxItem
                                             key={city.value}
                                             checked={selectedCities.includes(city.value)}
+                                            onSelect={(event) => event.preventDefault()}
                                             onCheckedChange={(checked) => {
                                                 setSelectedCities((prev) =>
-                                                    checked
-                                                        ? [...prev, city.value]
-                                                        : prev.filter((value) => value !== city.value)
+                                                    toggleMultiValue(
+                                                        prev,
+                                                        city.value,
+                                                        Boolean(checked)
+                                                    )
                                                 );
                                             }}
                                         >
