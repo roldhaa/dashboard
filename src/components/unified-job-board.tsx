@@ -23,7 +23,6 @@ import { type ExternalJob } from "@/types/jobs";
 import {
     buildFilterIndex,
     formatLocationForDisplay,
-    matchLocationFilters,
     normalizeLocations,
     normalizeSearchText,
     type NormalizedJobLocation,
@@ -67,10 +66,11 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
     const [searchTerm, setSearchTerm] = useState("");
     const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
     const [selectedCountry, setSelectedCountry] = useState<string>("all");
-    const [selectedState, setSelectedState] = useState<string>("all");
+    const [selectedStates, setSelectedStates] = useState<string[]>([]);
     const [selectedCities, setSelectedCities] = useState<string[]>([]);
     const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
     const [selectedWorkModes, setSelectedWorkModes] = useState<Array<"onsite" | "hybrid" | "remote">>([]);
+    const [includeUnresolvedLocations, setIncludeUnresolvedLocations] = useState(false);
     const [categories, setCategories] = useState<string[]>([]);
     const [visibleCount, setVisibleCount] = useState(20);
     const observerRef = useRef<IntersectionObserver | null>(null);
@@ -275,6 +275,11 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
 
     const cityToKey = (city: string): string =>
         normalizeSearchText(city).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const regionToKey = (region: string): string =>
+        normalizeSearchText(region).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const getRegionKey = (location: NormalizedJobLocation): string =>
+        location.normalized.region_code ||
+        (location.normalized.region ? regionToKey(location.normalized.region) : "");
     const normalizedSearch = useMemo(() => normalizeSearchText(searchTerm), [searchTerm]);
 
     type ActiveFilters = {
@@ -282,9 +287,10 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
         categories: string[];
         workModes: Array<"onsite" | "hybrid" | "remote">;
         country: string;
-        state: string;
+        states: string[];
         cities: string[];
         search: string;
+        includeUnresolved: boolean;
     };
 
     const activeFilters: ActiveFilters = useMemo(
@@ -293,18 +299,20 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
             categories: selectedCategories,
             workModes: selectedWorkModes,
             country: selectedCountry,
-            state: selectedState,
+            states: selectedStates,
             cities: selectedCities,
             search: normalizedSearch,
+            includeUnresolved: includeUnresolvedLocations,
         }),
         [
             selectedTypes,
             selectedCategories,
             selectedWorkModes,
             selectedCountry,
-            selectedState,
+            selectedStates,
             selectedCities,
             normalizedSearch,
+            includeUnresolvedLocations,
         ]
     );
 
@@ -368,46 +376,53 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
         if (
             ignoreFacet !== "workModes" &&
             filters.workModes.length > 0 &&
-            !normalized.some((loc) => filters.workModes.includes(loc.type))
+            !normalized
+                .filter((loc) => filters.includeUnresolved || !loc.unresolved)
+                .some((loc) => filters.workModes.includes(loc.type))
         ) {
             return false;
         }
 
+        const consideredLocations = normalized.filter(
+            (location) => filters.includeUnresolved || !location.unresolved
+        );
+        if (consideredLocations.length === 0) return false;
+
         if (
             ignoreFacet !== "countries" &&
-            !matchLocationFilters(normalized, {
-                countryCode: filters.country,
-                regionKey: "all",
-                cityKey: "all",
-            })
+            filters.country !== "all" &&
+            !consideredLocations.some(
+                (location) => location.normalized.country_code === filters.country
+            )
         ) {
             return false;
         }
 
         if (
             ignoreFacet !== "states" &&
-            !matchLocationFilters(normalized, {
-                countryCode: filters.country,
-                regionKey: filters.state,
-                cityKey: "all",
+            filters.states.length > 0 &&
+            !consideredLocations.some((location) => {
+                if (
+                    filters.country !== "all" &&
+                    location.normalized.country_code !== filters.country
+                ) {
+                    return false;
+                }
+                const stateKey = getRegionKey(location);
+                return stateKey.length > 0 && filters.states.includes(stateKey);
             })
         ) {
             return false;
         }
 
         if (ignoreFacet !== "cities" && filters.cities.length > 0) {
-            const cityMatch = normalized.some((location) => {
+            const cityMatch = consideredLocations.some((location) => {
                 if (!location.normalized.city) return false;
                 const cityKey = cityToKey(location.normalized.city);
                 if (filters.country !== "all" && location.normalized.country_code !== filters.country) return false;
                 if (
-                    filters.state !== "all" &&
-                    (location.normalized.region_code ||
-                        (location.normalized.region
-                            ? normalizeSearchText(location.normalized.region)
-                                  .replace(/[^a-z0-9]+/g, "-")
-                                  .replace(/^-|-$/g, "")
-                            : "")) !== filters.state
+                    filters.states.length > 0 &&
+                    !filters.states.includes(getRegionKey(location))
                 ) {
                     return false;
                 }
@@ -425,7 +440,9 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
         const counts = new Map<string, number>();
         allJobs.forEach((job) => {
             if (!matchJobWithFilters(job, activeFilters, facet)) return;
-            const normalized = normalizedLocationsByJob.get(job.id) || [];
+            const normalized = (normalizedLocationsByJob.get(job.id) || []).filter(
+                (loc) => activeFilters.includeUnresolved || !loc.unresolved
+            );
             const values = new Set<string>();
             if (facet === "types") {
                 values.add(getJobTypeValue(job));
@@ -440,26 +457,14 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
             } else if (facet === "states" && selectedCountry !== "all") {
                 normalized.forEach((loc) => {
                     if (loc.normalized.country_code !== selectedCountry) return;
-                    const stateKey =
-                        loc.normalized.region_code ||
-                        (loc.normalized.region
-                            ? normalizeSearchText(loc.normalized.region)
-                                  .replace(/[^a-z0-9]+/g, "-")
-                                  .replace(/^-|-$/g, "")
-                            : "");
+                    const stateKey = getRegionKey(loc);
                     if (stateKey) values.add(stateKey);
                 });
             } else if (facet === "cities" && selectedCountry !== "all") {
                 normalized.forEach((loc) => {
                     if (loc.normalized.country_code !== selectedCountry) return;
-                    const stateKey =
-                        loc.normalized.region_code ||
-                        (loc.normalized.region
-                            ? normalizeSearchText(loc.normalized.region)
-                                  .replace(/[^a-z0-9]+/g, "-")
-                                  .replace(/^-|-$/g, "")
-                            : "");
-                    if (selectedState !== "all" && stateKey !== selectedState) return;
+                    const stateKey = getRegionKey(loc);
+                    if (selectedStates.length > 0 && !selectedStates.includes(stateKey)) return;
                     if (loc.normalized.city) values.add(cityToKey(loc.normalized.city));
                 });
             }
@@ -474,8 +479,14 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
     const categoryCounts = useMemo(() => computeFacetCounts("categories"), [allJobs, activeFilters, normalizedLocationsByJob]);
     const workModeCounts = useMemo(() => computeFacetCounts("workModes"), [allJobs, activeFilters, normalizedLocationsByJob]);
     const countryCounts = useMemo(() => computeFacetCounts("countries"), [allJobs, activeFilters, normalizedLocationsByJob]);
-    const stateCounts = useMemo(() => computeFacetCounts("states"), [allJobs, activeFilters, normalizedLocationsByJob, selectedCountry]);
-    const cityCounts = useMemo(() => computeFacetCounts("cities"), [allJobs, activeFilters, normalizedLocationsByJob, selectedCountry, selectedState]);
+    const stateCounts = useMemo(
+        () => computeFacetCounts("states"),
+        [allJobs, activeFilters, normalizedLocationsByJob, selectedCountry]
+    );
+    const cityCounts = useMemo(
+        () => computeFacetCounts("cities"),
+        [allJobs, activeFilters, normalizedLocationsByJob, selectedCountry, selectedStates]
+    );
 
     const sortByCountThenLabel = (
         items: Array<{ value: string; label: string; count: number }>
@@ -542,23 +553,28 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
                 label: state.label,
                 count: stateCounts.get(state.value) || 0,
             }))
-        ).filter((opt) => opt.count > 0 || selectedState === opt.value);
-    }, [filterIndex, selectedCountry, stateCounts, selectedState]);
+        ).filter((opt) => opt.count > 0 || selectedStates.includes(opt.value));
+    }, [filterIndex, selectedCountry, stateCounts, selectedStates]);
 
     const availableCities = useMemo(() => {
         if (selectedCountry === "all") return [];
         const cities =
-            selectedState === "all"
+            selectedStates.length === 0
                 ? filterIndex.citiesByCountry[selectedCountry] || []
-                : filterIndex.citiesByCountryState[`${selectedCountry}::${selectedState}`] || [];
+                : selectedStates.flatMap(
+                      (state) =>
+                          filterIndex.citiesByCountryState[`${selectedCountry}::${state}`] || []
+                  );
+        const uniqueCityMap = new Map<string, { value: string; label: string }>();
+        cities.forEach((city) => uniqueCityMap.set(city.value, city));
         return sortByCountThenLabel(
-            cities.map((city) => ({
+            Array.from(uniqueCityMap.values()).map((city) => ({
                 value: city.value,
                 label: city.label,
                 count: cityCounts.get(city.value) || 0,
             }))
         ).filter((opt) => opt.count > 0 || selectedCities.includes(opt.value));
-    }, [filterIndex, selectedCountry, selectedState, cityCounts, selectedCities]);
+    }, [filterIndex, selectedCountry, selectedStates, cityCounts, selectedCities]);
 
     const filteredJobs = useMemo(() => {
         let filtered = allJobs.filter((job) => matchJobWithFilters(job, activeFilters));
@@ -574,17 +590,15 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
     useEffect(() => {
         if (selectedCountry !== "all" && !availableCountries.some((c) => c.value === selectedCountry)) {
             setSelectedCountry("all");
-            setSelectedState("all");
+            setSelectedStates([]);
             setSelectedCities([]);
         }
     }, [selectedCountry, availableCountries]);
 
     useEffect(() => {
-        if (selectedState !== "all" && !availableStates.some((s) => s.value === selectedState)) {
-            setSelectedState("all");
-            setSelectedCities([]);
-        }
-    }, [selectedState, availableStates]);
+        const availableStateSet = new Set(availableStates.map((state) => state.value));
+        setSelectedStates((prev) => prev.filter((state) => availableStateSet.has(state)));
+    }, [availableStates]);
 
     useEffect(() => {
         const citySet = new Set(availableCities.map((c) => c.value));
@@ -749,7 +763,7 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
                             value={selectedCountry}
                             onValueChange={(value) => {
                                 setSelectedCountry(value);
-                                setSelectedState("all");
+                                setSelectedStates([]);
                                 setSelectedCities([]);
                             }}
                         >
@@ -765,31 +779,46 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
                                 ))}
                             </SelectContent>
                         </Select>
-                        {selectedCountry !== "all" &&
-                            availableStates.length > 0 && (
-                                <Select
-                                    value={selectedState}
-                                    onValueChange={(value) => {
-                                        setSelectedState(value);
-                                        setSelectedCities([]);
-                                    }}
-                                >
-                                <SelectTrigger className="w-full sm:w-32">
-                                    <SelectValue placeholder="State" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="all">
-                                        All States
-                                    </SelectItem>
+                        {selectedCountry !== "all" && availableStates.length > 0 && (
+                            <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                    <Button
+                                        variant="outline"
+                                        className="w-full sm:w-48 justify-start font-normal"
+                                    >
+                                        {selectedStates.length === 0
+                                            ? "All States"
+                                            : selectedStates.length === 1
+                                              ? "1 state selected"
+                                              : `${selectedStates.length} states selected`}
+                                    </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent className="w-56 max-h-72 overflow-y-auto">
+                                    <DropdownMenuItem onClick={() => setSelectedStates([])}>
+                                        Clear state filters
+                                    </DropdownMenuItem>
                                     {availableStates.map((state) => (
-                                        <SelectItem key={state.value} value={state.value}>
+                                        <DropdownMenuCheckboxItem
+                                            key={state.value}
+                                            checked={selectedStates.includes(state.value)}
+                                            onSelect={(event) => event.preventDefault()}
+                                            onCheckedChange={(checked) => {
+                                                setSelectedStates((prev) =>
+                                                    toggleMultiValue(
+                                                        prev,
+                                                        state.value,
+                                                        Boolean(checked)
+                                                    )
+                                                );
+                                            }}
+                                        >
                                             {state.label} ({state.count})
-                                        </SelectItem>
+                                        </DropdownMenuCheckboxItem>
                                     ))}
-                                </SelectContent>
-                            </Select>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
                         )}
-                        {selectedState !== "all" && availableCities.length > 0 && (
+                        {selectedCountry !== "all" && availableCities.length > 0 && (
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                     <Button
@@ -829,18 +858,31 @@ export function UnifiedJobBoard({ limit, variant = "full" }: UnifiedJobBoardProp
                             </DropdownMenu>
                         )}
                         {(selectedCountry !== "all" ||
-                            selectedState !== "all" ||
+                            selectedStates.length > 0 ||
                             selectedCities.length > 0) && (
                             <Button
                                 variant="ghost"
                                 className="w-full sm:w-auto"
                                 onClick={() => {
                                     setSelectedCountry("all");
-                                    setSelectedState("all");
+                                    setSelectedStates([]);
                                     setSelectedCities([]);
                                 }}
                             >
                                 Clear location filters
+                            </Button>
+                        )}
+                        {import.meta.env.DEV && (
+                            <Button
+                                variant={includeUnresolvedLocations ? "default" : "outline"}
+                                className="w-full sm:w-auto"
+                                onClick={() =>
+                                    setIncludeUnresolvedLocations((prev) => !prev)
+                                }
+                            >
+                                {includeUnresolvedLocations
+                                    ? "Include unresolved: ON"
+                                    : "Include unresolved: OFF"}
                             </Button>
                         )}
                     </div>
